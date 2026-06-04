@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"  # WebSocket
+      - "7881:7881"  # WebRTC
+      - "7882:7882"  # Webhook
+    environment:
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - PORT=7880
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - DEBUG=True
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+    depends_on:
+      - livekit
+    volumes:
+      - .:/app
+    command: python main.py
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
