@@ -1,19 +1,15 @@
-"""Main FastAPI application with LiveKit WebSocket integration"""
+"""Main FastAPI application with WebSocket integration"""
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import json
 import asyncio
 from typing import Dict, Set
 from datetime import datetime
-import base64
 from loguru import logger
 
 from config import settings
 from models import (
-    UserInput,
-    SessionMessage,
     ChatMessage,
     ToolCall,
     ToolResult,
@@ -49,14 +45,20 @@ active_connections: Dict[str, Set[WebSocket]] = {}
 @app.on_event("startup")
 async def startup_event():
     """Initialize on startup"""
-    await voice_pipeline.initialize()
-    logger.info("Application started")
+    try:
+        await voice_pipeline.initialize()
+        logger.info("Application started successfully")
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up on shutdown"""
-    await voice_pipeline.cleanup()
-    logger.info("Application shutdown")
+    try:
+        await voice_pipeline.cleanup()
+        logger.info("Application shutdown successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
 
 @app.get("/")
 async def root():
@@ -64,7 +66,8 @@ async def root():
     return {
         "message": "Real-Time Voice AI Agent Backend",
         "version": "1.0.0",
-        "status": "running"
+        "status": "running",
+        "docs": "/docs"
     }
 
 @app.get("/health")
@@ -293,7 +296,7 @@ async def handle_user_input(
             }
         })
         
-        # Collect full response before streaming TTS
+        # Collect full response
         full_response = ""
         text_chunks = []
         tool_calls = []
@@ -304,34 +307,40 @@ async def handle_user_input(
             full_response += chunk
             text_chunks.append(chunk)
             
-            # Send text chunk to client
-            asyncio.create_task(
-                websocket.send_json({
-                    "type": "streaming_text",
-                    "data": {
-                        "chunk": chunk,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                })
-            )
+            # Send text chunk to client immediately
+            try:
+                asyncio.create_task(
+                    websocket.send_json({
+                        "type": "streaming_text",
+                        "data": {
+                            "chunk": chunk,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    })
+                )
+            except Exception as e:
+                logger.error(f"Error sending text chunk: {str(e)}")
         
         async def on_tool_call(tool_call: ToolCall):
             tool_calls.append(tool_call)
             
             # Send tool call notification
-            asyncio.create_task(
-                websocket.send_json({
-                    "type": "tool_call",
-                    "data": {
-                        "tool_name": tool_call.tool_name,
-                        "tool_type": tool_call.tool_type,
-                        "description": tool_call.description,
-                        "parameters": tool_call.parameters
-                    }
-                })
-            )
+            try:
+                asyncio.create_task(
+                    websocket.send_json({
+                        "type": "tool_call",
+                        "data": {
+                            "tool_name": tool_call.tool_name,
+                            "tool_type": tool_call.tool_type,
+                            "description": tool_call.description,
+                            "parameters": tool_call.parameters
+                        }
+                    })
+                )
+            except Exception as e:
+                logger.error(f"Error sending tool call: {str(e)}")
         
-        # Stream response
+        # Stream response from LLM
         async for chunk in voice_pipeline.process_user_input(
             user_text=user_text,
             on_text_chunk=on_text_chunk,
@@ -367,20 +376,6 @@ async def handle_user_input(
                         "error": str(e)
                     }
                 })
-        
-        # Stream audio (TTS)
-        # In production, this would integrate with a TTS service
-        # For now, we send a completion signal
-        await websocket.send_json({
-            "type": "status",
-            "data": {
-                "status": "speaking",
-                "message": "Speaking response..."
-            }
-        })
-        
-        # Simulate TTS processing (in production, this would call OpenAI TTS or similar)
-        await asyncio.sleep(len(full_response) / 100)  # Rough estimate
         
         # Send completion signal
         await websocket.send_json({
