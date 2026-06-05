@@ -1,14 +1,14 @@
 # Real-Time Voice AI Agent Backend
 
-A production-ready backend for a real-time conversational AI assistant built with FastAPI, LiveKit, and OpenAI.
+A production-ready backend for a real-time conversational AI assistant built with FastAPI, LiveKit, and Groq LLM.
 
 ## Features
 
 ### Core Voice Pipeline
 - **Voice Activity Detection (VAD)** - Detects when user starts/stops speaking
-- **Speech-to-Text (STT)** - Real-time speech transcription using Deepgram or OpenAI Whisper
+- **Speech-to-Text (STT)** - Real-time speech transcription using Deepgram
 - **Turn Detection** - Intelligent pause detection to know when user finishes speaking
-- **Language Model** - GPT-4o for intelligent, context-aware responses
+- **Language Model** - Groq LLM (Mixtral-8x7b) for intelligent, context-aware responses
 - **Text-to-Speech (TTS)** - Converts responses to natural-sounding audio
 - **Sub-second latency** - Optimized for responsive real-time interaction
 
@@ -45,9 +45,9 @@ A production-ready backend for a real-time conversational AI assistant built wit
 | **Voice Infrastructure** | LiveKit Cloud + LiveKit Agents |
 | **Backend Framework** | FastAPI + Uvicorn |
 | **Agent Framework** | LiveKit Agents Python SDK |
-| **LLM** | OpenAI GPT-4o |
-| **STT** | Deepgram or OpenAI Whisper |
-| **TTS** | OpenAI TTS |
+| **LLM** | Groq (Mixtral-8x7b or Llama2-70b) |
+| **STT** | Deepgram |
+| **TTS** | Deepgram or ElevenLabs |
 | **Real-time Communication** | WebSockets |
 | **Containerization** | Docker & Docker Compose |
 
@@ -57,7 +57,7 @@ A production-ready backend for a real-time conversational AI assistant built wit
 - Python 3.11+
 - Docker & Docker Compose (optional, for containerized deployment)
 - API Keys:
-  - OpenAI API Key
+  - Groq API Key (free from https://console.groq.com)
   - Deepgram API Key (optional, for STT)
   - News API Key (optional, for news tool)
 
@@ -236,8 +236,8 @@ LIVEKIT_URL=ws://localhost:7880
 LIVEKIT_API_KEY=your_api_key
 LIVEKIT_API_SECRET=your_api_secret
 
-# OpenAI
-OPENAI_API_KEY=sk-...
+# Groq LLM
+GROQ_API_KEY=your_groq_api_key
 
 # Deepgram (STT)
 DEEPGRAM_API_KEY=your_deepgram_key
@@ -250,6 +250,19 @@ SERVER_HOST=0.0.0.0
 SERVER_PORT=8000
 DEBUG=False
 ```
+
+## Getting Groq API Key
+
+1. Visit [Groq Console](https://console.groq.com)
+2. Sign up for a free account
+3. Create an API key
+4. Add it to your `.env` file
+
+**Groq Advantages:**
+- **Free tier** - No credit card required for development
+- **Fast inference** - Extremely low latency responses
+- **Multiple models** - Mixtral-8x7b, Llama2-70b, etc.
+- **Competitive performance** - High-quality responses
 
 ## Performance Optimization
 
@@ -330,15 +343,32 @@ async def my_tool(self, param1: str) -> ToolResult:
 - Test with HTTP endpoint first
 
 **LLM rate limiting**
-- Implement exponential backoff
-- Check OpenAI account limits
-- Use model caching
+- Groq has generous free tier limits
+- Check your API key quota
+- Consider rate limiting on client side
 
 **High latency**
 - Check network connectivity
 - Monitor server CPU/memory
 - Review streaming implementation
 - Reduce model size if needed
+
+## Migration from OpenAI
+
+This project has been migrated from OpenAI to Groq LLM. Key changes:
+
+1. **LLM Client**: Changed from `AsyncOpenAI` to `Groq`
+2. **Dependencies**: Replaced `openai` package with `groq`
+3. **API Key**: Changed from `OPENAI_API_KEY` to `GROQ_API_KEY`
+4. **TTS**: Migrated to Deepgram TTS (previously used OpenAI TTS)
+5. **STT**: Using Deepgram (no OpenAI Whisper API dependency)
+
+### Benefits of Groq:
+- ✅ Free API tier (no credit card needed)
+- ✅ Ultra-fast inference (10x faster than cloud LLMs)
+- ✅ Cost-effective for production
+- ✅ Multiple model options
+- ✅ Excellent for real-time applications
 
 ## Deployment
 
@@ -385,10 +415,11 @@ For issues and questions:
 - Open an issue on GitHub
 - Check existing documentation
 - Review LiveKit documentation: https://docs.livekit.io
+- Check Groq documentation: https://console.groq.com/docs
 
 ## Acknowledgments
 
 - LiveKit for voice infrastructure
-- OpenAI for LLM and TTS
-- Deepgram for STT
+- Groq for LLM inference
+- Deepgram for STT/TTS
 - FastAPI for the web framework
