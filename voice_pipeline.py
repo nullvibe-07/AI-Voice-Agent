@@ -3,23 +3,13 @@
 import asyncio
 from typing import Optional, AsyncGenerator, Callable
 from loguru import logger
-from livekit.agents import (
-    VoiceAssistantOptions,
-    WorkerOptions,
-    JobContext,
-    llm,
-    TurnEndedCallback,
-)
-from livekit.agents.openai import OpenAI, LLMOptions as OpenAILLMOptions
-from livekit.agents.silero import VAD
-from livekit.agents.deepgram import STT as DeepgramSTT
-from livekit.agents.openai import TTS as OpenAITTS
-from livekit import agents
 import json
+from datetime import datetime
+
 from models import ChatMessage, ToolCall, ToolResult
 from tools.server_tools import ServerTools
 from tools.client_tools import ClientTools
-import re
+from config import settings
 
 class VoicePipeline:
     """Main voice processing pipeline"""
@@ -29,11 +19,20 @@ class VoicePipeline:
         self.client_tools = ClientTools()
         self.conversation_history: list[ChatMessage] = []
         self.is_processing = False
+        self.openai_client = None
 
     async def initialize(self):
         """Initialize the voice pipeline"""
-        await self.server_tools.initialize()
-        logger.info("Voice pipeline initialized")
+        try:
+            # Initialize OpenAI client
+            from openai import AsyncOpenAI
+            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+            
+            await self.server_tools.initialize()
+            logger.info("Voice pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing voice pipeline: {str(e)}")
+            raise
 
     async def cleanup(self):
         """Clean up resources"""
@@ -78,7 +77,6 @@ Speak naturally and conversationally. You're having a chat, not giving a present
     async def process_user_input(
         self,
         user_text: str,
-        ctx: Optional[JobContext] = None,
         on_text_chunk: Optional[Callable[[str], None]] = None,
         on_tool_call: Optional[Callable[[ToolCall], None]] = None,
     ) -> AsyncGenerator[str, None]:
@@ -87,7 +85,6 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         
         Args:
             user_text: User input text
-            ctx: LiveKit job context
             on_text_chunk: Callback for text chunks
             on_tool_call: Callback for tool calls
             
@@ -134,33 +131,31 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         """
         Stream LLM response with tool calling support
         """
-        from config import settings
-        
         try:
-            # Initialize OpenAI LLM
-            llm_client = OpenAI(api_key=settings.openai_api_key)
+            if not self.openai_client:
+                raise RuntimeError("OpenAI client not initialized")
             
             full_response = ""
-            
-            # Create message with tools
-            messages_to_send = messages.copy()
+            tool_calls_list = []
             
             # Stream completion
-            stream = await llm_client.astream_chat(
+            stream = await self.openai_client.chat.completions.create(
                 model=settings.openai_model,
-                messages=messages_to_send,
+                messages=messages,
                 tools=tools_schema if tools_schema else None,
+                tool_choice="auto" if tools_schema else None,
                 temperature=0.7,
                 max_tokens=500,
+                stream=True,
             )
             
             async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta:
-                    delta = chunk.choices[0].delta
+                if chunk.choices and len(chunk.choices) > 0:
+                    choice = chunk.choices[0]
                     
                     # Handle text content
-                    if hasattr(delta, 'content') and delta.content:
-                        text_chunk = delta.content
+                    if hasattr(choice.delta, 'content') and choice.delta.content:
+                        text_chunk = choice.delta.content
                         full_response += text_chunk
                         
                         # Emit text chunk
@@ -170,11 +165,13 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                         yield text_chunk
                     
                     # Handle tool calls
-                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                        for tool_call in delta.tool_calls:
-                            tool_info = self._parse_tool_call(tool_call, full_response)
-                            if tool_info and on_tool_call:
-                                on_tool_call(tool_info)
+                    if hasattr(choice.delta, 'tool_calls') and choice.delta.tool_calls:
+                        for tool_call in choice.delta.tool_calls:
+                            tool_info = self._parse_tool_call(tool_call)
+                            if tool_info:
+                                tool_calls_list.append(tool_info)
+                                if on_tool_call:
+                                    on_tool_call(tool_info)
             
             # Add assistant response to history
             assistant_msg = ChatMessage(
@@ -182,6 +179,8 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                 content=full_response
             )
             self.conversation_history.append(assistant_msg)
+            
+            logger.info(f"LLM response streamed successfully. Tool calls: {len(tool_calls_list)}")
             
         except Exception as e:
             logger.error(f"Error in LLM streaming: {str(e)}")
@@ -198,8 +197,10 @@ Speak naturally and conversationally. You're having a chat, not giving a present
             }
         ]
         
-        # Add conversation history
-        for msg in self.conversation_history:
+        # Add conversation history (limit to last 10 messages for context window)
+        history_to_include = self.conversation_history[-10:] if len(self.conversation_history) > 10 else self.conversation_history
+        
+        for msg in history_to_include:
             messages.append({
                 "role": msg.role,
                 "content": msg.content
@@ -209,7 +210,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
 
     def _get_tools_schema(self) -> list:
         """
-        Get the tools schema for the LLM
+        Get the tools schema for the LLM in OpenAI format
         """
         tools = []
         
@@ -249,7 +250,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         
         return tools
 
-    def _parse_tool_call(self, tool_call, full_response: str) -> Optional[ToolCall]:
+    def _parse_tool_call(self, tool_call) -> Optional[ToolCall]:
         """
         Parse tool call from LLM response
         """
@@ -269,8 +270,11 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                 arguments = {}
                 if hasattr(func, 'arguments') and func.arguments:
                     try:
-                        arguments = json.loads(func.arguments)
-                    except json.JSONDecodeError:
+                        if isinstance(func.arguments, str):
+                            arguments = json.loads(func.arguments)
+                        else:
+                            arguments = func.arguments
+                    except (json.JSONDecodeError, TypeError):
                         pass
                 
                 return ToolCall(
