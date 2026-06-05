@@ -8,9 +8,9 @@ class Settings(BaseSettings):
     livekit_api_key: str = os.getenv("LIVEKIT_API_KEY", "")
     livekit_api_secret: str = os.getenv("LIVEKIT_API_SECRET", "")
     
-    # OpenAI Configuration
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = "gpt-4o"
+    # Groq Configuration (LLM)
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_model: str = "mixtral-8x7b-32768"  # or "llama2-70b-4096"
     
     # Deepgram Configuration
     deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
