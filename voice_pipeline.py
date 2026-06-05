@@ -1,4 +1,4 @@
-"""Voice processing pipeline with streaming support"""
+"""Voice processing pipeline with streaming support - Full voice AI agent"""
 
 import asyncio
 from typing import Optional, AsyncGenerator, Callable
@@ -12,7 +12,7 @@ from tools.client_tools import ClientTools
 from config import settings
 
 class VoicePipeline:
-    """Main voice processing pipeline"""
+    """Main voice processing pipeline with LLM, STT, TTS, and tool calling"""
 
     def __init__(self):
         self.server_tools = ServerTools()
@@ -20,16 +20,49 @@ class VoicePipeline:
         self.conversation_history: list[ChatMessage] = []
         self.is_processing = False
         self.openai_client = None
+        self.stt_engine = None
+        self.tts_engine = None
+        self.vad_detector = None
 
     async def initialize(self):
-        """Initialize the voice pipeline"""
+        """Initialize the voice pipeline with all engines"""
         try:
-            # Initialize OpenAI client
+            # Initialize OpenAI client for LLM
             from openai import AsyncOpenAI
             self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
             
+            # Initialize STT (Speech-to-Text) - Deepgram or Whisper
+            try:
+                from livekit_plugins import deepgram
+                self.stt_engine = deepgram.STT(api_key=settings.deepgram_api_key)
+                logger.info("Deepgram STT initialized")
+            except Exception as e:
+                logger.warning(f"Deepgram STT failed, will use Whisper: {str(e)}")
+                try:
+                    from livekit_plugins import silero
+                    # Fallback to Silero VAD + OpenAI Whisper
+                    self.vad_detector = silero.VAD.load()
+                    logger.info("Silero VAD initialized as fallback")
+                except Exception as e2:
+                    logger.warning(f"Silero VAD also failed: {str(e2)}")
+            
+            # Initialize TTS (Text-to-Speech) - OpenAI TTS
+            try:
+                from livekit_plugins import openai as livekit_openai
+                self.tts_engine = livekit_openai.TTS(api_key=settings.openai_api_key)
+                logger.info("OpenAI TTS initialized")
+            except Exception as e:
+                logger.warning(f"OpenAI TTS failed: {str(e)}")
+                try:
+                    # Fallback to ElevenLabs or Cartesia if available
+                    from livekit_plugins import elevenlabs
+                    self.tts_engine = elevenlabs.TTS(api_key=settings.openai_api_key)
+                    logger.info("ElevenLabs TTS initialized as fallback")
+                except Exception as e2:
+                    logger.warning(f"ElevenLabs TTS also failed: {str(e2)}")
+            
             await self.server_tools.initialize()
-            logger.info("Voice pipeline initialized successfully")
+            logger.info("Voice pipeline initialized successfully with all engines")
         except Exception as e:
             logger.error(f"Error initializing voice pipeline: {str(e)}")
             raise
@@ -81,10 +114,10 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         on_tool_call: Optional[Callable[[ToolCall], None]] = None,
     ) -> AsyncGenerator[str, None]:
         """
-        Process user input and stream response
+        Process user input text and stream response
         
         Args:
-            user_text: User input text
+            user_text: User input text (from typing or STT)
             on_text_chunk: Callback for text chunks
             on_tool_call: Callback for tool calls
             
@@ -129,7 +162,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         on_tool_call: Optional[Callable[[ToolCall], None]] = None,
     ) -> AsyncGenerator[str, None]:
         """
-        Stream LLM response with tool calling support
+        Stream LLM response with tool calling support using OpenAI API
         """
         try:
             if not self.openai_client:
@@ -138,7 +171,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
             full_response = ""
             tool_calls_list = []
             
-            # Stream completion
+            # Stream completion from OpenAI
             stream = await self.openai_client.chat.completions.create(
                 model=settings.openai_model,
                 messages=messages,
@@ -158,7 +191,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                         text_chunk = choice.delta.content
                         full_response += text_chunk
                         
-                        # Emit text chunk
+                        # Emit text chunk for streaming to client
                         if on_text_chunk:
                             on_text_chunk(text_chunk)
                         
@@ -185,6 +218,151 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         except Exception as e:
             logger.error(f"Error in LLM streaming: {str(e)}")
             raise
+
+    async def synthesize_speech(
+        self,
+        text: str,
+        on_audio_chunk: Optional[Callable[[bytes], None]] = None
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Convert text to speech using TTS engine and stream audio chunks
+        
+        Args:
+            text: Text to synthesize
+            on_audio_chunk: Callback for audio chunks
+            
+        Yields:
+            Audio data chunks
+        """
+        try:
+            if not self.tts_engine:
+                logger.warning("TTS engine not initialized, skipping speech synthesis")
+                return
+            
+            logger.info(f"Synthesizing speech for text: {text[:50]}...")
+            
+            # Use LiveKit TTS plugin to synthesize
+            # This will stream audio chunks as they become available
+            try:
+                # If using LiveKit OpenAI TTS plugin
+                audio_stream = await self.tts_engine.asynthesize(text)
+                
+                async for chunk in audio_stream:
+                    if on_audio_chunk:
+                        on_audio_chunk(chunk)
+                    yield chunk
+                    
+            except AttributeError:
+                # Fallback: Direct OpenAI TTS API
+                from openai import OpenAI
+                client = OpenAI(api_key=settings.openai_api_key)
+                
+                response = client.audio.speech.create(
+                    model="tts-1",
+                    voice="alloy",
+                    input=text,
+                    stream=True
+                )
+                
+                for chunk in response.iter_bytes(chunk_size=4096):
+                    if on_audio_chunk:
+                        on_audio_chunk(chunk)
+                    yield chunk
+            
+            logger.info("Speech synthesis completed")
+            
+        except Exception as e:
+            logger.error(f"Error in speech synthesis: {str(e)}")
+            raise
+
+    async def transcribe_audio(
+        self,
+        audio_data: bytes,
+        language: str = "en"
+    ) -> str:
+        """
+        Convert speech to text using STT engine
+        
+        Args:
+            audio_data: Raw audio bytes
+            language: Language code (default: English)
+            
+        Returns:
+            Transcribed text
+        """
+        try:
+            if not self.stt_engine:
+                logger.warning("STT engine not initialized, using Whisper fallback")
+                return await self._whisper_transcribe(audio_data, language)
+            
+            logger.info("Transcribing audio...")
+            
+            # Use LiveKit STT plugin
+            try:
+                transcript = await self.stt_engine.atranscribe(audio_data)
+                text = transcript.text if hasattr(transcript, 'text') else str(transcript)
+                logger.info(f"Transcribed: {text}")
+                return text
+                
+            except Exception as e:
+                logger.warning(f"STT plugin transcription failed: {str(e)}, falling back to Whisper")
+                return await self._whisper_transcribe(audio_data, language)
+            
+        except Exception as e:
+            logger.error(f"Error in audio transcription: {str(e)}")
+            raise
+
+    async def _whisper_transcribe(self, audio_data: bytes, language: str = "en") -> str:
+        """
+        Fallback transcription using OpenAI Whisper API
+        """
+        try:
+            import io
+            from openai import OpenAI
+            
+            client = OpenAI(api_key=settings.openai_api_key)
+            
+            # Convert bytes to file-like object
+            audio_file = io.BytesIO(audio_data)
+            audio_file.name = "audio.wav"
+            
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language=language,
+            )
+            
+            text = transcript.text
+            logger.info(f"Whisper transcribed: {text}")
+            return text
+            
+        except Exception as e:
+            logger.error(f"Whisper transcription failed: {str(e)}")
+            return ""
+
+    def detect_voice_activity(self, audio_data: bytes) -> bool:
+        """
+        Detect if audio contains speech using VAD
+        
+        Args:
+            audio_data: Raw audio bytes
+            
+        Returns:
+            True if speech detected, False otherwise
+        """
+        try:
+            if not self.vad_detector:
+                logger.warning("VAD not initialized, returning True")
+                return True
+            
+            # Use Silero VAD for voice activity detection
+            speech_detected = self.vad_detector(audio_data)
+            logger.debug(f"Speech activity detected: {speech_detected}")
+            return speech_detected
+            
+        except Exception as e:
+            logger.error(f"Error in voice activity detection: {str(e)}")
+            return True  # Assume speech if detection fails
 
     def _prepare_messages(self) -> list:
         """
