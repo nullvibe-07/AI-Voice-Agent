@@ -33,13 +33,13 @@ class VoicePipeline:
             
             # Initialize STT (Speech-to-Text) - Deepgram or Whisper
             try:
-                from livekit_plugins import deepgram
+                from livekit.plugins import deepgram
                 self.stt_engine = deepgram.STT(api_key=settings.deepgram_api_key)
                 logger.info("Deepgram STT initialized")
             except Exception as e:
                 logger.warning(f"Deepgram STT failed, will use Whisper: {str(e)}")
                 try:
-                    from livekit_plugins import silero
+                    from livekit.plugins import silero
                     # Fallback to Silero VAD + OpenAI Whisper
                     self.vad_detector = silero.VAD.load()
                     logger.info("Silero VAD initialized as fallback")
@@ -48,14 +48,14 @@ class VoicePipeline:
             
             # Initialize TTS (Text-to-Speech) - OpenAI TTS
             try:
-                from livekit_plugins import openai as livekit_openai
+                from livekit.plugins import openai as livekit_openai
                 self.tts_engine = livekit_openai.TTS(api_key=settings.openai_api_key)
                 logger.info("OpenAI TTS initialized")
             except Exception as e:
                 logger.warning(f"OpenAI TTS failed: {str(e)}")
                 try:
                     # Fallback to ElevenLabs or Cartesia if available
-                    from livekit_plugins import elevenlabs
+                    from livekit.plugins import elevenlabs
                     self.tts_engine = elevenlabs.TTS(api_key=settings.openai_api_key)
                     logger.info("ElevenLabs TTS initialized as fallback")
                 except Exception as e2:
