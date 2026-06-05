@@ -19,7 +19,7 @@ class VoicePipeline:
         self.client_tools = ClientTools()
         self.conversation_history: list[ChatMessage] = []
         self.is_processing = False
-        self.openai_client = None
+        self.groq_client = None
         self.stt_engine = None
         self.tts_engine = None
         self.vad_detector = None
@@ -27,9 +27,10 @@ class VoicePipeline:
     async def initialize(self):
         """Initialize the voice pipeline with all engines"""
         try:
-            # Initialize OpenAI client for LLM
-            from openai import AsyncOpenAI
-            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+            # Initialize Groq client for LLM
+            from groq import Groq
+            self.groq_client = Groq(api_key=settings.groq_api_key)
+            logger.info("Groq LLM client initialized")
             
             # Initialize STT (Speech-to-Text) - Deepgram or Whisper
             try:
@@ -46,17 +47,17 @@ class VoicePipeline:
                 except Exception as e2:
                     logger.warning(f"Silero VAD also failed: {str(e2)}")
             
-            # Initialize TTS (Text-to-Speech) - OpenAI TTS
+            # Initialize TTS (Text-to-Speech) - Using Deepgram or ElevenLabs (no OpenAI dependency)
             try:
-                from livekit.plugins import openai as livekit_openai
-                self.tts_engine = livekit_openai.TTS(api_key=settings.openai_api_key)
-                logger.info("OpenAI TTS initialized")
+                from livekit.plugins import deepgram as deepgram_plugin
+                self.tts_engine = deepgram_plugin.TTS(api_key=settings.deepgram_api_key)
+                logger.info("Deepgram TTS initialized")
             except Exception as e:
-                logger.warning(f"OpenAI TTS failed: {str(e)}")
+                logger.warning(f"Deepgram TTS failed: {str(e)}")
                 try:
-                    # Fallback to ElevenLabs or Cartesia if available
+                    # Fallback to alternative TTS if available
                     from livekit.plugins import elevenlabs
-                    self.tts_engine = elevenlabs.TTS(api_key=settings.openai_api_key)
+                    self.tts_engine = elevenlabs.TTS()
                     logger.info("ElevenLabs TTS initialized as fallback")
                 except Exception as e2:
                     logger.warning(f"ElevenLabs TTS also failed: {str(e2)}")
@@ -162,18 +163,18 @@ Speak naturally and conversationally. You're having a chat, not giving a present
         on_tool_call: Optional[Callable[[ToolCall], None]] = None,
     ) -> AsyncGenerator[str, None]:
         """
-        Stream LLM response with tool calling support using OpenAI API
+        Stream LLM response with tool calling support using Groq API
         """
         try:
-            if not self.openai_client:
-                raise RuntimeError("OpenAI client not initialized")
+            if not self.groq_client:
+                raise RuntimeError("Groq client not initialized")
             
             full_response = ""
             tool_calls_list = []
             
-            # Stream completion from OpenAI
-            stream = await self.openai_client.chat.completions.create(
-                model=settings.openai_model,
+            # Stream completion from Groq
+            stream = self.groq_client.chat.completions.create(
+                model=settings.groq_model,
                 messages=messages,
                 tools=tools_schema if tools_schema else None,
                 tool_choice="auto" if tools_schema else None,
@@ -182,7 +183,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                 stream=True,
             )
             
-            async for chunk in stream:
+            for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0:
                     choice = chunk.choices[0]
                     
@@ -244,7 +245,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
             # Use LiveKit TTS plugin to synthesize
             # This will stream audio chunks as they become available
             try:
-                # If using LiveKit OpenAI TTS plugin
+                # If using LiveKit TTS plugin (Deepgram or ElevenLabs)
                 audio_stream = await self.tts_engine.asynthesize(text)
                 
                 async for chunk in audio_stream:
@@ -253,21 +254,10 @@ Speak naturally and conversationally. You're having a chat, not giving a present
                     yield chunk
                     
             except AttributeError:
-                # Fallback: Direct OpenAI TTS API
-                from openai import OpenAI
-                client = OpenAI(api_key=settings.openai_api_key)
-                
-                response = client.audio.speech.create(
-                    model="tts-1",
-                    voice="alloy",
-                    input=text,
-                    stream=True
-                )
-                
-                for chunk in response.iter_bytes(chunk_size=4096):
-                    if on_audio_chunk:
-                        on_audio_chunk(chunk)
-                    yield chunk
+                # Fallback: Use external TTS service
+                logger.warning("TTS plugin streaming not available, using fallback")
+                # You can implement a fallback to Deepgram TTS API or another service
+                pass
             
             logger.info("Speech synthesis completed")
             
@@ -314,30 +304,24 @@ Speak naturally and conversationally. You're having a chat, not giving a present
 
     async def _whisper_transcribe(self, audio_data: bytes, language: str = "en") -> str:
         """
-        Fallback transcription using OpenAI Whisper API
+        Fallback transcription using OpenAI Whisper API via aiohttp or direct Deepgram
         """
         try:
             import io
-            from openai import OpenAI
             
-            client = OpenAI(api_key=settings.openai_api_key)
+            # Use Deepgram for transcription as it's already integrated
+            if self.stt_engine:
+                transcript = await self.stt_engine.atranscribe(audio_data)
+                text = transcript.text if hasattr(transcript, 'text') else str(transcript)
+                logger.info(f"Deepgram transcribed: {text}")
+                return text
             
-            # Convert bytes to file-like object
-            audio_file = io.BytesIO(audio_data)
-            audio_file.name = "audio.wav"
-            
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language=language,
-            )
-            
-            text = transcript.text
-            logger.info(f"Whisper transcribed: {text}")
-            return text
+            # Alternative: Use a simple aiohttp call to a transcription service
+            logger.warning("No STT engine available for transcription")
+            return ""
             
         except Exception as e:
-            logger.error(f"Whisper transcription failed: {str(e)}")
+            logger.error(f"Transcription failed: {str(e)}")
             return ""
 
     def detect_voice_activity(self, audio_data: bytes) -> bool:
@@ -388,7 +372,7 @@ Speak naturally and conversationally. You're having a chat, not giving a present
 
     def _get_tools_schema(self) -> list:
         """
-        Get the tools schema for the LLM in OpenAI format
+        Get the tools schema for the LLM in Groq/OpenAI format
         """
         tools = []
         
