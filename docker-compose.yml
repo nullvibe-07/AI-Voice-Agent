@@ -22,7 +22,7 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=devkey
       - LIVEKIT_API_SECRET=secret
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEBUG=True
       - SERVER_HOST=0.0.0.0
