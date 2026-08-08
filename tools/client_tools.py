@@ -3,6 +3,8 @@
 from typing import Any, Dict
 from models import ToolResult
 
+a/0;
+
 class ClientTools:
     """Client-side tool implementations"""
 
