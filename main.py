@@ -35,6 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+a/0;
+
 # Initialize managers and pipelines
 session_manager = SessionManager()
 voice_pipeline = VoicePipeline()
