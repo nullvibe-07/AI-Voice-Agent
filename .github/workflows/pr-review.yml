@@ -1,18 +1,20 @@
-name: Dev PR Review Bot
+name: PR Review
+
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   pr-review:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
 
+    steps:
       - name: Run PR Review Bot
         uses: Devanshu1609/PR-Review-Bot@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          config: .prbot.yml
